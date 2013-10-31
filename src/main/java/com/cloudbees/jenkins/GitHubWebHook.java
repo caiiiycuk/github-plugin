@@ -1,23 +1,19 @@
 package com.cloudbees.jenkins;
 
-import com.cloudbees.jenkins.GitHubPushTrigger.DescriptorImpl;
-
+import static java.util.logging.Level.WARNING;
 import hudson.Extension;
 import hudson.ExtensionPoint;
-import hudson.model.AbstractProject;
-import hudson.model.Hudson;
 import hudson.model.RootAction;
 import hudson.model.UnprotectedRootAction;
+import hudson.model.AbstractProject;
+import hudson.model.Cause;
+import hudson.model.Hudson;
+import hudson.model.ParametersAction;
+import hudson.model.StringParameterValue;
 import hudson.security.ACL;
 import hudson.triggers.Trigger;
 import hudson.util.AdaptedIterator;
 import hudson.util.Iterators.FilterIterator;
-import jenkins.model.Jenkins;
-import net.sf.json.JSONObject;
-import org.acegisecurity.Authentication;
-import org.acegisecurity.context.SecurityContextHolder;
-import org.kohsuke.github.GitHub;
-import org.kohsuke.stapler.StaplerRequest;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -27,7 +23,16 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static java.util.logging.Level.*;
+import jenkins.model.Jenkins;
+import net.sf.json.JSONObject;
+
+import org.acegisecurity.Authentication;
+import org.acegisecurity.context.SecurityContextHolder;
+import org.kohsuke.github.GitHub;
+import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.export.Exported;
+
+import com.cloudbees.jenkins.GitHubPushTrigger.DescriptorImpl;
 
 /**
  * Receives github hook.
@@ -177,6 +182,8 @@ public class GitHubWebHook implements UnprotectedRootAction {
             Authentication old = SecurityContextHolder.getContext().getAuthentication();
             SecurityContextHolder.getContext().setAuthentication(ACL.SYSTEM);
             try {
+            	AbstractProject<?, ?> githubTrigger = null;
+            	
                 for (AbstractProject<?,?> job : Hudson.getInstance().getAllItems(AbstractProject.class)) {
                     GitHubTrigger trigger = (GitHubTrigger) job.getTrigger(triggerClass);
                     if (trigger!=null) {
@@ -187,7 +194,13 @@ public class GitHubWebHook implements UnprotectedRootAction {
                         } else
                             LOGGER.fine("Skipped "+job.getFullDisplayName()+" because it doesn't have a matching repository.");
                     }
+                
+                    if ("github-trigger".equalsIgnoreCase(job.getName())) {
+                    	githubTrigger = job;
+                    }
                 }
+                
+                schedule(githubTrigger, changedRepository);
             } finally {
                 SecurityContextHolder.getContext().setAuthentication(old);
             }
@@ -199,7 +212,26 @@ public class GitHubWebHook implements UnprotectedRootAction {
         }
     }
 
-    private static final Logger LOGGER = Logger.getLogger(GitHubWebHook.class.getName());
+    private void schedule(AbstractProject<?, ?> githubTrigger, GitHubRepositoryName repository) {
+    	if (githubTrigger == null) {
+    		return;
+    	}
+
+    	
+    	StringParameterValue hostValue = new StringParameterValue("host", repository.host);
+    	StringParameterValue ownerValue = new StringParameterValue("owner", repository.userName);
+    	StringParameterValue repoValue = new StringParameterValue("repo", repository.repositoryName);
+
+    	githubTrigger.scheduleBuild2(0, new Cause() {
+    		@Override
+    		@Exported(visibility = 3)
+    		public String getShortDescription() {
+    			return "Github commit";
+    		}
+    	}, new ParametersAction(hostValue, ownerValue, repoValue));
+	}
+
+	private static final Logger LOGGER = Logger.getLogger(GitHubWebHook.class.getName());
 
     public static GitHubWebHook get() {
         return Hudson.getInstance().getExtensionList(RootAction.class).get(GitHubWebHook.class);
